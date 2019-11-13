@@ -7,6 +7,8 @@ from compas.datastructures import Mesh
 from compas.geometry import add_vectors
 from compas.geometry import scale_vector
 from compas.geometry import Frame
+from compas.geometry import Point
+from compas.geometry import Box
 from compas.geometry import Transformation
 from compas.geometry import transform_points
 from compas.geometry import cross_vectors
@@ -14,29 +16,18 @@ from compas.geometry import subtract_vectors
 from compas.geometry import bounding_box_xy
 from compas.geometry import offset_polygon
 from compas.geometry import intersection_line_plane
+import compas.geometry as cg
 
 # ==============================================================================
-# Create a proxy for PCA. This will reconnect to an existing proxy server if one
-# exists, or start a new one otherwise. Point the proxy to `commpas.numerical`
-# to provide access to `pca_numpy`.
-# Note that if you are unable to connect to the server, the following things
-# might help:
-# 1. Kill all instances of running servers. Look for instances of `python.exe`
-#    or `pythonw.exe` in the *Activity Monitor* (Mac) or the *Details* tab of the
-#    *Task Manager* (Windows).
-# 2. Start the proxy server externally from the command line before running this
-#    script in Rhino.
-# 3. Call a help line.
+# Create a proxy for PCA
 # ==============================================================================
 
 from compas.rpc import Proxy
-numerical = Proxy('compas.numerical')
+numerical = Proxy("compas.numerical")
 pca_numpy = numerical.pca_numpy
 
 # ==============================================================================
-# Make a cablenet.
-# The JSON input file is produced with the command `FOFIN_to`, which serializes
-# the cablenet data structure to a JSON file.
+# Construct a cablenet
 # ==============================================================================
 
 HERE = os.path.dirname(__file__)
@@ -45,38 +36,23 @@ FILE_I = os.path.join(HERE, 'data', 'cablenet.json')
 cablenet = Cablenet.from_json(FILE_I)
 
 # ==============================================================================
-# Set an offset parameter to define the distance between the edge of the
-# structure and the location of the boundary frame.
-# Set a padding parameter to add some extra material around the bounding box of
-# the intersection points.
+# Parameters
 # ==============================================================================
 
 OFFSET = 0.200
 PADDING = 0.020
 
 # ==============================================================================
-# Find the vertices on the *SOUTH* boundary, which are all vertices where the
-# attribute `'constraint'` is set to `'SOUTH'`. Remember that the function returns
-# a generator object that can be used to iterate over the vertices once. To store
-# the vertices such that they can be iterated over multiple times, the generator
-# has to be converted to a list.
+# Vertices on SOUTH
 # ==============================================================================
 
-SOUTH = list(cablenet.vertices_where({'constraint': 'SOUTH'}))
-
-# ==============================================================================
-# The vertices returned by `vertices_where` have no particular order. To make
-# sure that the vertices are in consecutive order, recreate the list of vertices
-# such that the vertices are in the same order as they are on the ordered boundary.
-# ==============================================================================
-
+SOUTH = list(cablenet.vertices_where({"constraint": "SOUTH"}))
 boundary = list(cablenet.vertices_on_boundary(ordered=True))
-SOUTH[:] = [key for key in boundary if key in SOUTH]
+SOUTH = [key for key in boundary if key in SOUTH]
+print SOUTH
 
 # ==============================================================================
-# Construct the local axes of the *SOUTH* boundary. Align the xaxis with the
-# main span of the boundary and the y axis with the world z axis. Use local x
-# and y to compute local z.
+# Boundary plane
 # ==============================================================================
 
 a = cablenet.vertex_coordinates(SOUTH[0])
@@ -85,36 +61,15 @@ b = cablenet.vertex_coordinates(SOUTH[-1])
 xaxis = subtract_vectors(b, a)
 yaxis = [0, 0, 1.0]
 zaxis = cross_vectors(xaxis, yaxis)
-
-# ==============================================================================
-# Note that in the general case x and y are not perpendicular because the x axis
-# defined by the span of the boundary, which is not necessarily horizontal. Since
-# we want to keep the local y axis aligned with the global z axis, use the local
-# y and z to redefine the local x.
-# ==============================================================================
-
 xaxis = cross_vectors(yaxis, zaxis)
 
-# ==============================================================================
-# Construct the frame of the *SOUTH* boundary using first point on the *SOUTH*
-# Note that the frame will take care of normalizing the provided axes.
-# ==============================================================================
-
-frame = Frame(a, xaxis, yaxis)
-
-# ==============================================================================
-# Construct an intersection plane from the frame of the boundary. Use the origin
-# of the frame as the plane point and the z axis of the frame as the plane normal.
-# Move the plane along the normal by the defined offset.
-# ==============================================================================
-
-point = add_vectors(frame.point, scale_vector(frame.zaxis, OFFSET))
+frame = Frame([0,0,0], xaxis, yaxis)
+point = add_vectors(a, scale_vector(frame.zaxis, OFFSET))
 normal = frame.zaxis
-plane = point, normal
+plane = cg.Plane(point, normal)
 
 # ==============================================================================
-# Compute the intersections of the residual force vectors at the boundary
-# vertices with the previously defined intersection plane.
+# Intersections
 # ==============================================================================
 
 intersections = []
@@ -123,72 +78,53 @@ for key in SOUTH:
     a = cablenet.vertex_coordinates(key)
     r = cablenet.residual(key)
     b = add_vectors(a, r)
-    x = intersection_line_plane((a, b), plane)
+    x = intersection_line_plane((a,b), plane)
 
-    intersections.append(x)
+    intersections.append(Point(*x))
 
-# ==============================================================================
-# Select the first 6 vertices of the boundary for the first segment of the
-# supporting structure. Compute a local frame for the selected vertices using a
-# PCA of the vertex locations.
-# ==============================================================================
 
-points = intersections[:6]
-
-origin, axes, values = pca_numpy(points)
-frame1 = Frame(origin, axes[0], axes[1])
 
 # ==============================================================================
-# Transform the local coordinates to world coordinates to make it an axis-aligned
-# problem.
+# Bounding boxes
 # ==============================================================================
+beam_num = len(intersections) // 6
+print(beam_num)
 
-X = Transformation.from_frame_to_frame(frame1, Frame.worldXY())
-points = transform_points(points, X)
+all_vertices = []
+all_faces = []
+
+for i in range(beam_num):
+    points = intersections[(i*6):((i+1)*6)]
+    
+    origin, axes, values = pca_numpy([list(point) for point in points])
+    
+    frame_1 = Frame(origin, axes[0], axes[1])
+    
+    x = Transformation.from_frame_to_frame(frame_1, Frame.worldXY())
+    points2 = transform_points(points, x)
+    bbox = bounding_box_xy(points2)
+    bbox = offset_polygon(bbox, -PADDING)
+    bbox = transform_points(bbox, x.inverse())
+    all_vertices.extend(bbox)
+    all_faces.append([i*4, i*4+1, i*4+2, i*4+3])
+
+bbox = Mesh.from_vertices_and_faces(all_vertices, all_faces)
+
 
 # ==============================================================================
-# Compute the axis aligned bounding box in world coordinates, ignoring the Z
-# components of the points. Add some padding to the bounding box to avoid having
-# vertices on the boundaries of the box. Convert the box back to the local
-# coordinate system.
-# ==============================================================================
-
-bbox = bounding_box_xy(points)
-bbox = offset_polygon(bbox, -PADDING)
-bbox = transform_points(bbox, X.inverse())
-
-# ==============================================================================
-# Convert the box to a mesh for visualisation.
-# ==============================================================================
-
-bbox = Mesh.from_vertices_and_faces(bbox, [[0, 1, 2, 3]])
-
-# ==============================================================================
-# Use a frame artist to visualize the boundary frame.
+# Visualization
 # ==============================================================================
 
 artist = FrameArtist(frame, layer="SOUTH::Frame", scale=0.3)
 artist.clear_layer()
 artist.draw()
 
-# ==============================================================================
-# Use a point artist to visualize the intersection points.
-# ==============================================================================
-
-PointArtist.draw_collection(intersections, layer="SOUTH::Intersections", clear=True)
-
-# ==============================================================================
-# Use a frame artist to visualize the frame of the intersection points.
-# ==============================================================================
-
-artist = FrameArtist(frame1, layer="SOUTH::Frame1", scale=0.3)
+artist = FrameArtist(frame_1, layer="SOUTH::Frame_1", scale=0.3)
 artist.clear_layer()
 artist.draw()
 
-# ==============================================================================
-# Use a mesh artist to visualize the bounding box.
-# ==============================================================================
-
-artist = MeshArtist(bbox, layer="SOUTH::Bbox1")
+artist = MeshArtist(bbox, layer= "SOUTH::Bbox1")
 artist.clear_layer()
-artist.draw_mesh()
+artist.draw_faces(join_faces=True,color=(0,255,255))
+
+PointArtist.draw_collection(intersections, layer="SOUTH::intersections", clear=True)

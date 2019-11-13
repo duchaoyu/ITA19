@@ -1,100 +1,82 @@
 import os
+import sys
 from compas_fofin.datastructures import Cablenet
 from compas_rhino.artists import MeshArtist
 from compas.datastructures import Mesh
-from compas.datastructures import mesh_flip_cycles
 from compas.geometry import add_vectors
 from compas.geometry import scale_vector
+from compas.datastructures import mesh_flip_cycles
+import compas.geometry as cg 
 
-# ==============================================================================
-# Set the path to the input file.
-# The input file was generated with `FOFIN_to`, which serialises the cablenet
-# data structure to JSON.
-# ==============================================================================
 
 HERE = os.path.dirname(__file__)
+
 FILE_I = os.path.join(HERE, 'data', 'cablenet.json')
-
-# ==============================================================================
-# Make a cablenet.
-# ==============================================================================
-
+FILE_O = os.path.join(HERE, 'data', 'blocks.json')
 cablenet = Cablenet.from_json(FILE_I)
-
-# ==============================================================================
-# Flip the cycles of the mesh because the cycles are currently such that the
-# normals point to the interior of the structure.
-# Note that you could also just flip the cycles once and update the JSON file.
-# ==============================================================================
-
 mesh_flip_cycles(cablenet)
 
 # ==============================================================================
-# Set the value of the thickness of the foam blocks in [m].
+# Parameters
 # ==============================================================================
 
-THICKNESS = 0.200
+OFFSET = 0.0500
 
 # ==============================================================================
-# Randomly select a face to create one block.
+# Make block
+# ==============================================================================
+blocks = []
+
+
+all_vertices = []
+all_faces = []
+
+
+for fkey in cablenet.faces():
+#fkey = cablenet.get_any_face()
+    vertices = cablenet.face_vertices(fkey)
+    points = cablenet.get_vertices_attributes("xyz", keys=vertices)
+    
+    polygon = cg. Polygon(points)
+    offset_polygon = cg.offset_polygon(points, OFFSET)
+    
+    normals= [cablenet.vertex_normal(key) for key in vertices]
+    
+    bottom = offset_polygon[:]
+    top = []
+    for point, normal in zip(offset_polygon, normals):
+        xyz = add_vectors(point, scale_vector(normal, OFFSET))
+        top.append(xyz)
+    vertices= bottom+top
+    faces = [[0, 3, 2, 1], [4, 5, 6, 7], [4, 0, 1, 5], [2, 6, 5, 1], [6, 2, 3, 7], [0, 4, 7, 3]]
+    block = Mesh.from_vertices_and_faces(vertices, faces)
+    blocks.append(block)
+    
+    
+    all_vertices.extend(vertices)
+    k = fkey * 8
+    faces_ = [[0+k, 3+k, 2+k, 1+k],[4+k, 5+k, 6+k, 7+k], [4+k, 0+k, 1+k, 5+k], [2+k, 6+k, 5+k, 1+k], [6+k, 2+k, 3+k, 7+k], [0+k, 4+k, 7+k, 3+k]]
+    all_faces.extend(faces_)
+
+b = Cablenet.from_vertices_and_faces(all_vertices, all_faces)
+# ==============================================================================
+# Visualize
 # ==============================================================================
 
-fkey = cablenet.get_any_face()
+#artist = MeshArtist(block, layer="Boxes::Test")
+#artist.clear_layer()
+#artist.draw_faces(join_faces=True,color=(0,255,255))
+#artist.draw_vertexlabels()
 
-# ==============================================================================
-# Get the vertices of the selected face.
-# The vertices are always in cycling order.
-# ==============================================================================
 
-vertices = cablenet.face_vertices(fkey)
+for i,block in enumerate(blocks):
+    artist = MeshArtist(block, layer="Boxes::Test")
+    if i == 0:
+        artist.clear_layer()
+    artist.draw_faces(join_faces=True,color=(0,255,255))
 
-# ==============================================================================
-# Look up the coordinates of the face vertices and the normals at those vertices.
-# Note that the normals are not stored as attributes, but rather have to be
-# computed based on the current geometry.
-# Therefore, there is no variant of the `get_vertices_attributes` that can be
-# used to look up the vertex normals.
-# ==============================================================================
+artist_2 = MeshArtist(b, layer="Boxes::Group")
+artist_2.clear_layer()
+artist_2.draw_faces(join_faces=True,color=(0,255,255))
 
-points = cablenet.get_vertices_attributes('xyz', keys=vertices)
-normals = [cablenet.vertex_normal(key) for key in vertices]
-
-# ==============================================================================
-# The bottom face of the block is formed by the vertices of the face of the
-# cablenet. The top vertices of the block are offset along the normal at each
-# vertex by the intended thickness of the block.
-# Note that this will not result in a block with constant thickness, because the
-# normals are generally not parallel. To create a block with constant thickness
-# you have to use the face normal to find a parallel offset plane and then
-# intersect each of the normal directions at the vertices with this plane.
-# ==============================================================================
-
-bottom = points[:]
-top = []
-for point, normal in zip(points, normals):
-    xyz = add_vectors(point, scale_vector(normal, THICKNESS))
-    top.append(xyz)
-
-# ==============================================================================
-# The vertices of the block mesh are simply the vertices of the bottom and top
-# faces. The faces themselves are defined such that once the block is formed
-# all face normals point towards the exterior of the block.
-# Note that this means that the order of the vertices of the bottom block has
-# to be reversed.
-# ==============================================================================
-
-vertices = bottom + top
-faces = [[0, 3, 2, 1], [4, 5, 6, 7], [3, 0, 4, 7], [2, 3, 7, 6], [1, 2, 6, 5], [0, 1, 5, 4]]
-
-block = Mesh.from_vertices_and_faces(vertices, faces)
-
-# ==============================================================================
-# Visualize the block with a mesh artist in the specified layer. Use
-# `draw_faces` (with `join_faces=True`) instead of `draw_mesh` to get a flat
-# shaded result. Also draw the vertex labels tovisualize the cycle directions.
-# ==============================================================================
-
-artist = MeshArtist(block, layer="Boxes::Test")
-artist.clear_layer()
-artist.draw_faces(join_faces=True, color=(0, 255, 255))
-artist.draw_vertexlabels()
+b.to_json(FILE_O)
